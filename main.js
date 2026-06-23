@@ -22,9 +22,9 @@
 /**
  * @param {string} url
  */
-async function _getData(url) {
+async function _getData(url, logs = true) {
   try {
-    console.log(`_getData: ${url}`)
+    if (logs) console.log(`_getData: ${url}`)
     const response = await fetch(url)
     if (!response.ok) {
       throw new Error(`Response status: ${response.status}`)
@@ -32,6 +32,7 @@ async function _getData(url) {
     return await response.json()
   } catch (error) {
     console.error("Error no fetch: ", error)
+    return null
   }
 }
 
@@ -143,6 +144,48 @@ function putResponse() {
       }
     }
   }
+}
+
+/**
+ * @param {string} slug
+ */
+async function fetchAnimeBySlug(slug) {
+  const URL = `https://cms.aniguessr.com/wp-json/wp/v2/anime?slug=${slug}`
+  return await _getData(URL)
+}
+
+async function fetchAllAnimes(forceUpdate = false) {
+  if (window.localStorage.getItem("animes") != null) {
+    // @ts-ignore
+    const animes = JSON.parse(window.localStorage.getItem("animes"))
+    console.log(`Total de animes: ${animes.length}`)
+    game.animes = animes
+    if (!forceUpdate) return animes
+  }
+  const animes = []
+  let page = 1
+  const getURL = (/** @type {any} */ page) => `https://cms.aniguessr.com/wp-json/aniguessr/v1/database?page=${page}&search=&first_letter=`
+  let lastProgress = -1
+  while (true) {
+    let response = await _getData(getURL(page))
+    const TOTAL_ITEMS = Number(response["total_items"])
+    const TOTAL_PAGES = Number(response["total_pages"])
+    if (response["animes"].length > 0) {
+      for (const anime of response["animes"]) {
+        animes.push(anime)
+      }
+      const progress = Math.floor((animes.length / TOTAL_ITEMS) * 100)
+      if (progress % 5 === 0 && progress !== lastProgress) {
+        lastProgress = progress;
+        console.log(`Baixando dados... (${progress}%) (Página ${page} de ${TOTAL_PAGES})`);
+      }
+      page++
+    } else break
+  }
+  window.localStorage.setItem("animes", JSON.stringify(animes))
+  console.log(`Animes salvos com sucesso no localStorage! (total de animes: ${animes.length})`)
+  game.animes = animes
+  return animes
 }
 
 /**
