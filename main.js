@@ -100,20 +100,77 @@ function _formatResponse() {
  */
 function _forceReactInputUpdate(element, newValue) {
   // Get the native input element value setter from the browser prototype
-  const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
-  const prototype = Object.getPrototypeOf(element);
-  const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+  const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set
+  const prototype = Object.getPrototypeOf(element)
+  const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
   // Run the native setter to bypass React's tracking mechanism
   if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
-    prototypeValueSetter.call(element, newValue);
+    prototypeValueSetter.call(element, newValue)
   } else if (valueSetter) {
-    valueSetter.call(element, newValue);
+    valueSetter.call(element, newValue)
   } else {
-    element.value = newValue;
+    element.value = newValue
   }
   // Dispatch a bubbling input event so React's onChange listener intercepts it
-  const event = new Event('input', { bubbles: true });
-  element.dispatchEvent(event);
+  const event = new Event('input', { bubbles: true })
+  element.dispatchEvent(event)
+}
+
+/**
+ * @param {Element} input
+ * @param {any[]} items
+ */
+function _updateDropdownList(input, items) {
+  const elements = document.querySelectorAll('ul.MuiAutocomplete-listbox')
+  let listbox = null
+  for (const element of elements.values()) {
+    if (element.id.startsWith(input.id)) {
+      listbox = element
+      break
+    }
+  }
+  if (listbox == null) return
+  const itemListElement = listbox.querySelectorAll("li")
+  if (!itemListElement.length) return
+  const template = itemListElement[0]
+  listbox.querySelectorAll("[data-custom]").forEach(el => el.remove())
+  const originalItems = new Set([...itemListElement].map(el => el.textContent?.trim().toLowerCase()))
+  items = items.filter(v => !originalItems.has(v.trim().toLowerCase())
+  ).sort()
+
+  /**
+   * @type {Node | null}
+   */
+  let lastFocused = null
+  items.forEach((/** @type {string | null} */ item, /** @type {number} */ index) => {
+    const clone = template.cloneNode(true)
+    clone.textContent = item
+    const optionIndex = itemListElement.length + index
+    clone.id = `${listbox.id.slice(0, listbox.id.lastIndexOf("-"))}-option-${optionIndex}`
+    clone.setAttribute("data-option-index", optionIndex)
+    clone.setAttribute("data-custom", "true")
+    clone.setAttribute("aria-selected", "false")
+    clone.addEventListener("mouseenter", () => {
+      lastFocused?.classList.remove("Mui-focused")
+      listbox.querySelector(".Mui-focused")?.classList.remove("Mui-focused")
+      clone.classList.add("Mui-focused")
+      lastFocused = clone
+    })
+    clone.addEventListener("mouseleave", () => clone.classList.remove("Mui-focused"))
+    clone.addEventListener("mousedown", (e) => {
+      e.preventDefault()
+    })
+    clone.addEventListener("click", e => {
+      _forceReactInputUpdate(input, item)
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.dispatchEvent(new Event("change", { bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "Enter"
+      }))
+    })
+    listbox.appendChild(clone)
+  })
 }
 
 function putResponse() {
@@ -150,52 +207,69 @@ function putResponse() {
  * @param {string} slug
  */
 async function fetchAnimeBySlug(slug) {
-  const URL = `https://cms.aniguessr.com/wp-json/wp/v2/anime?slug=${slug}`
+  const URL = `https://cms.aniguessr.com/wp-json/wp/v2/anime/${slug}`
   return await _getData(URL)
 }
 
-async function fetchAllAnimes(forceUpdate = false) {
-  if (window.localStorage.getItem("animes") != null) {
-    // @ts-ignore
-    const animes = JSON.parse(window.localStorage.getItem("animes"))
-    console.log(`Total de animes: ${animes.length}`)
-    game.animes = animes
-    if (!forceUpdate) return animes
+async function getAnimes(forceUpdate = false) {
+  const cached = localStorage.getItem("animes")
+  if (cached) {
+    game.animes = JSON.parse(cached)
+    console.log(`Total de animes: ${game.animes.length}`)
+    if (!forceUpdate) return game.animes
   }
   const animes = []
   let page = 1
-  const getURL = (/** @type {any} */ page) => `https://cms.aniguessr.com/wp-json/aniguessr/v1/database?page=${page}&search=&first_letter=`
   let lastProgress = -1
-  while (true) {
-    let response = await _getData(getURL(page))
-    const TOTAL_ITEMS = Number(response["total_items"])
-    const TOTAL_PAGES = Number(response["total_pages"])
-    if (response["animes"].length > 0) {
-      for (const anime of response["animes"]) {
-        animes.push(anime)
-      }
-      const progress = Math.floor((animes.length / TOTAL_ITEMS) * 100)
-      if (progress % 5 === 0 && progress !== lastProgress) {
-        lastProgress = progress;
-        console.log(`Baixando dados... (${progress}%) (Página ${page} de ${TOTAL_PAGES})`);
-      }
-      page++
-    } else break
-  }
-  window.localStorage.setItem("animes", JSON.stringify(animes))
-  console.log(`Animes salvos com sucesso no localStorage! (total de animes: ${animes.length})`)
+  // @ts-ignore
+  const getURL = (page) => `https://cms.aniguessr.com/wp-json/aniguessr/v1/database?page=${page}&search=&first_letter=`
+  do {
+    const response = await _getData(getURL(page), false)
+    const batch = response["animes"]
+    if (!batch?.length) break
+    animes.push(...batch)
+    page++
+    const progress = Math.floor((animes.length / Number(response["total_items"])) * 100)
+    if (progress % 5 === 0 && progress !== lastProgress) {
+      lastProgress = progress
+      console.log(`Baixando dados... (${progress}%) (Página ${page - 1} de ${response["total_pages"]})`)
+    }
+  } while (true)
+  localStorage.setItem("animes", JSON.stringify(animes))
+  console.log(`Animes salvos com sucesso! (total: ${animes.length})`)
   game.animes = animes
   return animes
 }
 
+
+async function getCharacters(forceUpdate = false) {
+  if (game.characters?.length && !forceUpdate) return game.characters
+  const cached = localStorage.getItem("characters")
+  if (cached && !forceUpdate) {
+    game.characters = JSON.parse(cached)
+    return game.characters
+  }
+  const response = await _getData(`https://cms.aniguessr.com/wp-json/aniguessr/v1/autocomplete/character`)
+  const characters = response instanceof Object ? Object.values(response) : []
+  if (characters.length) localStorage.setItem("characters", JSON.stringify(characters))
+  game.characters = characters
+  return characters
+}
+
 /**
+ * @typedef {Object} DropdownListConfig
+ * @property {number} limit
  * @typedef {Object} Config
  * @property {boolean} enabledAlert
+ * @property {DropdownListConfig} dropdownList
  */
 
 /** @type {Config} */
 const configs = {
-  enabledAlert: true
+  enabledAlert: true,
+  dropdownList: {
+    limit: 50
+  }
 }
 
 /**
@@ -203,8 +277,9 @@ const configs = {
  * @property {Date} date
  * @property {string} type
  * @property {Object} fullResponse
- * @property {any[]} animes
  * @property {any[]} response
+ * @property {any[]} animes
+ * @property {any[]} characters
  */
 
 /** @type {Game} */
@@ -213,12 +288,14 @@ const game = {
   type: "",
   fullResponse: {},
   response: [],
-  animes: []
+  animes: [],
+  characters: [],
 };
 
 (async () => {
-  let url = "https://cms.aniguessr.com/wp-json/aniguessr/v1/autocomplete/anime"
-  game.animes = await _getData(url)
+  // const url = "https://cms.aniguessr.com/wp-json/aniguessr/v1/autocomplete/anime"
+  game.animes = await getAnimes()
+  game.characters = await getCharacters()
   let lastUrl = location.href
   let interval = -1
   setInterval(async () => {
@@ -351,8 +428,26 @@ const game = {
                   }
                 }
               }, 1000)
+              const inputs = document.querySelectorAll("#game_container input[type='text']")
+              const animeTitles = game.animes.flatMap(x => [x.title, x.title_2])
+              inputs.forEach((input, index) => {
+                input.addEventListener("input", e => {
+                  // @ts-ignore
+                  const valor = e.target.value.toLowerCase()
+                  let items = index % 2 == 0 ? game.characters : animeTitles
+                  items = items.filter(v => v.toLowerCase().includes(valor)).sort().slice(0, configs.dropdownList.limit)
+                  setTimeout(() => _updateDropdownList(input, items), 150)
+                })
+              })
             }, 1000)
           } else {
+            /*
+            TODO: Implementar uma solução para este tipo de jogo...
+            https://cms.aniguessr.com/wp-json/aniguessr/v1/animdle/?answer=Tesagure%21+Bukatsumono&round=1&date=20260626
+            Fazendo uma request para este endpoint, uma dica é revelada:
+            https://cms.aniguessr.com/wp-json/aniguessr/v1/animdle/?answer=a&round=22&date=20260626
+            cms.aniguessr.com/wp-json/wp/v2/anime?page=296
+            */
             const buttonCheat = document.getElementById(buttonId)
             if (buttonCheat) buttonCheat.remove()
             if (configs.enabledAlert) alert([
