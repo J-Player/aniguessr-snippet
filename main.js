@@ -14,10 +14,12 @@
  * - replay    => https://cms.aniguessr.com/wp-json/aniguessr/v1/game/music?date=<DATE>
  * ending      => https://cms.aniguessr.com/wp-json/aniguessr/v1/game/endings
  * - replay    => https://cms.aniguessr.com/wp-json/aniguessr/v1/game/endings?date=<DATE>
- * anidle      => https://cms.aniguessr.com/wp-json/aniguessr/v1/game/animdle
- * - replay    => https://cms.aniguessr.com/wp-json/aniguessr/v1/game/animdle?date=<DATE>
+ * anidle      => https://cms.aniguessr.com/wp-json/aniguessr/v1/animdle?answer=<ANSWER>
+ * - replay    => https://cms.aniguessr.com/wp-json/aniguessr/v1/animdle?answer=<ANSWER>&date=<DATE>
  * 2. Buscará os dados relacionados ao jogo atual e armazena o resultado na variável "game"
-*/
+ * 3. Um botão de trapaça será criado dinamicamente e quando o usuário clicar nesse botão, a resposta será
+ * automaticamente inserida no(s) input(s) do jogo atual APENAS SE o input estiver vazio
+ */
 
 /**
  * @param {string} url
@@ -90,6 +92,9 @@ function _formatResponse() {
         response.push(round)
       }
       game.response = response
+      break
+    case "animdle":
+      response.push(game.fullResponse["answer_data"]["title"] || game.fullResponse["answer_data"]["title2"])
       break
   }
   return response
@@ -175,40 +180,30 @@ function _updateDropdownList(input, items) {
 
 function putResponse() {
   const roundElement = document.querySelector("#game_container > div > h2")
-  if (roundElement) {
-    const REGEX = /\d+/
-    const currentRound = Number(roundElement.textContent?.match(REGEX)?.[0]) - 1
-    const inputs = document.querySelectorAll("#game_container input[type='text']")
-    const startIndex = currentRound * inputs.length
-    let response = null
-    if (inputs.length == 1) {
-      response = game.response[currentRound]
-      _forceReactInputUpdate(inputs[0], response)
-      console.log(`Round ${currentRound + 1} | response: ${response}`)
-    } else {
-      const checkArray = (/** @type {unknown} */ arr) => Array.isArray(arr) && arr.every(item => Array.isArray(item))
-      if (checkArray(game.response)) {
-        let roundResponses = game.response[currentRound].flat()
-        for (let i = 0; i < inputs.length; i += 2) {
-          response = game.response[currentRound].flat()[i]
-          const node = inputs[i]
-          // @ts-ignore
-          if (node.value?.length > 0) continue
-          _forceReactInputUpdate(inputs[i], roundResponses[i])
-          _forceReactInputUpdate(inputs[i + 1], roundResponses[i + 1])
-          console.log(`Round ${currentRound + 1} | character: ${roundResponses[i]} | anime: ${roundResponses[i + 1]}`)
-        }
+  const REGEX = /\d+/
+  const currentRound = Number(roundElement?.textContent?.match(REGEX)?.[0]) - 1 || 0
+  const inputs = document.querySelectorAll("#game_container input[type='text']")
+  let response = null
+  if (inputs.length == 1) {
+    response = game.response[currentRound]
+    _forceReactInputUpdate(inputs[0], response)
+    if (roundElement) console.log(`Round ${currentRound + 1} | response: ${response}`)
+    else console.log(`response: ${response}`)
+  } else {
+    const checkArray = (/** @type {unknown} */ arr) => Array.isArray(arr) && arr.every(item => Array.isArray(item))
+    if (checkArray(game.response)) {
+      let roundResponses = game.response[currentRound].flat()
+      for (let i = 0; i < inputs.length; i += 2) {
+        response = game.response[currentRound].flat()[i]
+        const node = inputs[i]
+        // @ts-ignore
+        if (node.value?.length > 0) continue
+        _forceReactInputUpdate(inputs[i], roundResponses[i])
+        _forceReactInputUpdate(inputs[i + 1], roundResponses[i + 1])
+        console.log(`Round ${currentRound + 1} | character: ${roundResponses[i]} | anime: ${roundResponses[i + 1]}`)
       }
     }
   }
-}
-
-/**
- * @param {string} slug
- */
-async function fetchAnimeBySlug(slug) {
-  const URL = `https://cms.aniguessr.com/wp-json/wp/v2/anime/${slug}`
-  return await _getData(URL)
 }
 
 async function getAnimes(forceUpdate = false) {
@@ -293,7 +288,6 @@ const game = {
 };
 
 (async () => {
-  // const url = "https://cms.aniguessr.com/wp-json/aniguessr/v1/autocomplete/anime"
   game.animes = await getAnimes()
   game.characters = await getCharacters()
   let lastUrl = location.href
@@ -306,7 +300,7 @@ const game = {
       const DATE = new Date()
       let dateFormatted = _formatDate(DATE)
       let gameType = null
-      let baseUrl = "https://cms.aniguessr.com/wp-json/aniguessr/v1/game"
+      let baseUrl = "https://cms.aniguessr.com/wp-json/aniguessr/v1"
       const REGEX = /https:\/\/aniguessr.com\/(replay\/(?<date>\d+)\/(?<gameReplay>.+))|(?<game>guess-.+|anidle)/
       if (REGEX.test(lastUrl)) {
         console.clear()
@@ -327,24 +321,34 @@ const game = {
             case "ending":
               gameType = "endings"
               break
+            case "anidle":
+              gameType = "animdle"
+              break
           }
-          baseUrl += `/${gameType}`
-          if (lastUrl.includes("replay")) baseUrl += `?date=${dateFormatted}`
-          let year = dateFormatted.slice(0, 4)
-          let month = dateFormatted.slice(4, 6)
-          let day = dateFormatted.slice(6, 8)
+          baseUrl += gameType == "animdle" ? `/${gameType}` : `/game/${gameType}`
+          const queries = []
+          if (gameType == "animdle") queries.push(`answer=a`, "round=22")
+          if (lastUrl.includes("replay")) queries.push(`date=${dateFormatted}`)
+          if (queries.length > 0) baseUrl += `?${queries.join("&")}`
+          const year = dateFormatted.slice(0, 4)
+          const month = dateFormatted.slice(4, 6)
+          const day = dateFormatted.slice(6, 8)
           dateFormatted = `\nData: ${day}/${month}/${year}\n`
-          if (gameType != "anidle") gameData = await _getData(baseUrl)
-          if (gameData != null && gameData["game_data"].length > 0) {
+          gameData = await _getData(baseUrl)
+          if (gameData != null) {
             game["date"] = _stringToDate(dateFormatted)
             game["type"] = gameType
-            game["fullResponse"] = JSON.parse(_decodeBase64(gameData["game_data"]))
+            if (gameType == "animdle") {
+              delete gameData["response"]
+              delete gameData["data"]
+              gameData["clues"] = JSON.parse(_decodeBase64(gameData["clues"]))
+              game["fullResponse"] = gameData
+            } else game["fullResponse"] = JSON.parse(_decodeBase64(gameData["game_data"]))
             game.response = _formatResponse()
-            gameData = JSON.parse(_decodeBase64(gameData["game_data"]))
             if (configs.enabledAlert) alert(`Dados do jogo "${gameType}" obtidos com sucesso! 🥳\n` +
               dateFormatted +
               '\nPara ver a resposta acesse "game.response" no console de desenvolvedor. 😎\n' +
-              '\nPara desativar os alertas digite "enabledAlert = false" no console de desenvolvedor. 🤫')
+              '\nPara desativar os alertas digite "configs.enabledAlert = false" no console de desenvolvedor. 🤫')
             setTimeout(() => {
               interval = setInterval(() => {
                 const buttonExists = document.getElementById(buttonId)
@@ -441,19 +445,12 @@ const game = {
               })
             }, 1000)
           } else {
-            /*
-            TODO: Implementar uma solução para este tipo de jogo...
-            https://cms.aniguessr.com/wp-json/aniguessr/v1/animdle/?answer=Tesagure%21+Bukatsumono&round=1&date=20260626
-            Fazendo uma request para este endpoint, uma dica é revelada:
-            https://cms.aniguessr.com/wp-json/aniguessr/v1/animdle/?answer=a&round=22&date=20260626
-            cms.aniguessr.com/wp-json/wp/v2/anime?page=296
-            */
             const buttonCheat = document.getElementById(buttonId)
             if (buttonCheat) buttonCheat.remove()
-            if (configs.enabledAlert) alert([
+            alert([
               `Não foi possível encontrar os dados do jogo "${gameType}" 😭`,
               dateFormatted,
-              `Se o tipo de jogo é "${gameType}" infelizmente não dá para trapaçear ¯\\_(ツ)_/¯`
+              `Verifique os logs no console para saber o que aconteceu 🔎`
             ].join("\n"))
           }
         }
