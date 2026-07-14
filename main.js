@@ -24,6 +24,8 @@
 const BASE_API_URL = "https://cms.aniguessr.com/wp-json/aniguessr/v1"
 const BUTTON_ID = "cheat-button"
 const URL_REGEX = /https:\/\/aniguessr.com\/(replay\/(?<date>\d+)\/(?<gameReplay>.+))|(?<game>guess-.+|anidle)/
+const INDEXED_DB_NAME = "firebaseLocalStorageDb"
+const INDEXED_DB_STORE_NAME = "firebaseLocalStorage"
 
 /** @type {Record<string, string>} */
 const GAME_TYPE_MAP = {
@@ -36,17 +38,25 @@ const GAME_TYPE_MAP = {
 const ZZ_CHARS = ["z", "Z", "Z"]
 
 /**
+ * @typedef {Object} UserConfig
+ * @property {string | undefined | null} email
+ * @property {string | undefined | null} password
  * @typedef {Object} DropdownListConfig
  * @property {number} limit
  * @typedef {Object} Config
  * @property {boolean} enabledAlert
  * @property {DropdownListConfig} dropdownList
+ * @property {UserConfig} user
  */
 
 /** @type {Config} */
 const configs = {
   enabledAlert: true,
   dropdownList: { limit: 50 },
+  user: {
+    email: undefined,
+    password: undefined
+  }
 }
 
 /**
@@ -69,16 +79,53 @@ const game = {
   characters: [],
 }
 
+/**
+ * @typedef {Object} SessionPayload
+ * @property {string} date
+ * @property {SessionData} data
+ * @typedef {Object} SessionData
+ * @property {string} type
+ * @property {string} game
+ * @property {number} score_total
+ * @property {Object} rounds
+ * @property {Object} answers
+ * @property {string} userAgent
+ * @property {string} appVersion
+ * @property {string} pseudo
+ * @property {string} uid
+ */
+
 // ─── HTTP / Data ──────────────────────────────────────────────────────────────
 
 /**
  * @param {string} url
- * @param {boolean} [logs]
  */
-async function _getData(url, logs = true) {
+async function _getData(url, headers = {}) {
   try {
-    if (logs) console.log(`_getData: ${url}`)
-    const response = await fetch(url)
+    console.log(`_getData: ${url}`)
+    const response = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...headers }
+    })
+    if (!response.ok) throw new Error(`Response status: ${response.status}`)
+    return await response.json()
+  } catch (error) {
+    console.error("Error no fetch: ", error)
+    return null
+  }
+}
+
+/**
+ * @param {RequestInfo | URL} url
+ * @param {any} payload
+ */
+async function _sendData(url, payload, headers = {}) {
+  try {
+    console.log(`_sendData: ${url}`)
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(payload),
+    })
     if (!response.ok) throw new Error(`Response status: ${response.status}`)
     return await response.json()
   } catch (error) {
@@ -203,7 +250,7 @@ async function getAnimes(forceUpdate = false) {
   const getURL = (/** @type {number} */ p) =>
     `${BASE_API_URL}/database?page=${p}&search=&first_letter=`
   do {
-    const response = await _getData(getURL(page), false)
+    const response = await _getData(getURL(page))
     const batch = response["animes"]
     if (!batch?.length) break
     animes.push(...batch)
@@ -311,7 +358,152 @@ function _updateDropdownList(input, items) {
   })
 }
 
-// ─── Cheat response ───────────────────────────────────────────────────────────
+// ─── Cheats ───────────────────────────────────────────────────────────────────
+
+function setupCredentials() {
+  configs.user.email = configs.user.email || prompt("Digite o email da conta:")
+  configs.user.password = configs.user.password || prompt("Digite a senha da conta:")
+  if (!(configs.user.email && configs.user.password)) throw Error("Defina o email e a senha de usuário em configs.user")
+  if (!configs.user.email.includes("@")) {
+    configs.user.email = null
+    configs.user.password = null
+    throw Error("Defina o email válido")
+  }
+  return configs.user
+}
+
+function resetCredentials() {
+  configs.user.email = null
+  configs.user.password = null
+}
+
+async function _getKeyAuthFromIndexedDb() {
+  const db = await new Promise((resolve, reject) => {
+    const req = indexedDB.open(INDEXED_DB_NAME);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(INDEXED_DB_STORE_NAME, "readonly");
+    const store = tx.objectStore(INDEXED_DB_STORE_NAME);
+    const keysReq = store.getAllKeys();
+
+    keysReq.onsuccess = () => {
+      const req = store.get(keysReq.result[0]);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    };
+    keysReq.onerror = () => reject(keysReq.error);
+  });
+}
+
+
+/** @type {{ idToken: string, expiresAt: number } | null} */
+let _tokenCache = null
+
+async function getIdToken() {
+  const apiKey = await getApiKey()
+  const user = setupCredentials()
+  const now = Date.now()
+  if (_tokenCache && now < _tokenCache.expiresAt - 60_000) return _tokenCache.idToken
+  const BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts:"
+  const signInResponse = await _sendData(`${BASE_URL}signInWithPassword?key=${apiKey}`, {
+    "returnSecureToken": true, "email": user.email, "password": user.password, "clientType": "CLIENT_TYPE_WEB"
+  })
+  if (!signInResponse["idToken"]) throw Error("idToken não encontrado")
+  _tokenCache = { idToken: signInResponse["idToken"], expiresAt: now + 3600_000 }
+  return _tokenCache.idToken
+}
+
+async function getUID() {
+  const result = await _getKeyAuthFromIndexedDb()
+  return result["value"]["uid"]
+}
+
+async function getApiKey() {
+  const result = await _getKeyAuthFromIndexedDb()
+  return result["value"]["apiKey"]
+}
+
+/**
+ * @param {string | null} formatedDate
+ */
+async function getCoins(formatedDate = null) {
+  const BASE_URL = "https://cms.aniguessr.com/wp-json/aniguessr/v1"
+  const isToday = formatedDate == null
+  let gameUrl = null
+  const UID = await getUID()
+  const idToken = await getIdToken()
+  const games = await _getData(isToday ? BASE_URL + "/init" : BASE_URL + `/game_history/${formatedDate}`)
+  let score_total = -1
+  for (const game of games["games"]) {
+    let gameUrl = `https://cms.aniguessr.com/wp-json/aniguessr/v1/game/${game["type"]}`
+    if (!isToday) gameUrl += `?date=${formatedDate}`
+    const currentGame = await _getData(gameUrl)
+    switch (currentGame["type"]) {
+      case "screenshots":
+      case "characters":
+        score_total = 30000
+        break
+      case "music":
+      case "endings":
+        score_total = 15000
+        break
+      default:
+        score_total = 10000
+    }
+    /** @type {SessionPayload} */
+    const sessionPayload = {
+      "date": formatedDate || _formatDate(new Date()),
+      "data": {
+        "type": currentGame["type"],
+        "game": String(currentGame["game_id"]),
+        "score_total": score_total,
+        "rounds": {},
+        "answers": {},
+        "userAgent": navigator.userAgent,
+        "appVersion": await _getData("https://aniguessr.com/version.json").then(v => v["version"]),
+        // @ts-ignore
+        "pseudo": localStorage.getItem("username"),
+        "uid": UID
+      }
+    }
+    const sessionResponse = await _sendData("https://cms.aniguessr.com/wp-json/aniguessr/v1/session", sessionPayload, { "Authorization": `Bearer ${idToken}` })
+    console.log(sessionResponse)
+  }
+
+}
+
+async function getSkinNames() {
+  const UID = await getUID()
+  const idToken = await getIdToken()
+  const url = `https://cms.aniguessr.com/wp-json/aniguessr/v1/skins?uid=${UID}`
+  const data = await _getData(url, { "Authorization": `Bearer ${idToken}` })
+  return data
+}
+
+/**
+ * @param {string} skinName
+ */
+async function setSkin(skinName) {
+  const skins = await getSkinNames()
+  const UID = await getUID()
+  const idToken = await getIdToken()
+  const currentSkin = skins["current"]["base"]
+  const outfits = Object.keys(skins["outfits"])
+  if (!outfits.includes(skinName))
+    throw Error(`Outfit "${skinName}" não encontrado. Outfits válidos: ${outfits.join(", ")}`)
+  const res = await _sendData(`https://cms.aniguessr.com/wp-json/aniguessr/v1/skin/save`, {
+    "username": localStorage.getItem("username"),
+    "uid": UID,
+    "skin": {
+      ...currentSkin,
+      "outfit": skinName
+    }
+  }, { "Authorization": `Bearer ${idToken}` })
+  console.log(res)
+}
 
 function putResponse() {
   const roundElement = document.querySelector("#game_container > div > h2")
@@ -441,14 +633,20 @@ function _injectCheatButton() {
 
 function _setupInputListeners() {
   const inputs = document.querySelectorAll("#game_container input[type='text']")
-  const animeTitles = game.animes.flatMap(x => [x.title, x.title_2])
+  const animeTitles = game.animes.flatMap(x => [x.title, x.title_2]).map(v => v.toLowerCase())
+  const characters = game.characters.map(v => v.toLowerCase())
+
   inputs.forEach((input, index) => {
+    let timer = -1
     input.addEventListener("input", e => {
+      clearTimeout(timer)
       // @ts-ignore
       const valor = e.target.value.toLowerCase()
-      let items = index % 2 === 0 && inputs.length > 1 ? game.characters : animeTitles
-      items = items.filter(v => v.toLowerCase().includes(valor)).sort().slice(0, configs.dropdownList.limit)
-      setTimeout(() => _updateDropdownList(input, items), 150)
+      timer = setTimeout(() => {
+        const pool = index % 2 === 0 && inputs.length > 1 ? characters : animeTitles
+        const items = pool.filter(v => v.includes(valor)).sort().slice(0, configs.dropdownList.limit)
+        _updateDropdownList(input, items)
+      }, 150)
     })
   })
 }
