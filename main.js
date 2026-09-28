@@ -51,7 +51,7 @@ const ZZ_CHARS = ["z", "Z", "Z"]
 
 /** @type {Config} */
 const configs = {
-  enabledAlert: true,
+  enabledAlert: false,
   dropdownList: { limit: 50 },
   user: {
     email: undefined,
